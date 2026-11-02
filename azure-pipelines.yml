@@ -1,19 +1,95 @@
-# Starter pipeline
-# Start with a minimal pipeline that you can customize to build and deploy your code.
-# Add steps that build, run tests, deploy, and more:
-# https://aka.ms/yaml
-
 trigger:
-- main
+  branches:
+    include:
+      - main
+      - feature/*
 
 pool:
-  vmImage: ubuntu-latest
+  vmImage: 'ubuntu-latest'
 
-steps:
-- script: echo Hello, world!
-  displayName: 'Run a one-line script'
+variables:
+  buildConfiguration: 'Release'
 
-- script: |
-    echo Add other tasks to build, test, and deploy your project.
-    echo See https://aka.ms/yaml
-  displayName: 'Run a multi-line script'
+stages:
+- stage: BuildAndTest
+  displayName: 'Build and Test Stage'
+  jobs:
+  - job: BuildJob
+    steps:
+    - task: UseDotNet@2
+      displayName: 'Install .NET 8 SDK'
+      inputs:
+        packageType: 'sdk'
+        version: '8.0.x'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Restore NuGet Dependencies'
+      inputs:
+        command: 'restore'
+        projects: '**/*.csproj'
+        feedsToUse: 'select'
+        vstsFeed: 'GiftOfTheGiver-DisasterRelief/GOTG-Artifacts'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Build Solution'
+      inputs:
+        command: 'build'
+        projects: '**/*.sln'
+        arguments: '--configuration $(buildConfiguration) --no-restore'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Execute Unit & Integration Tests'
+      inputs:
+        command: 'test'
+        projects: '**/*Tests/*.csproj'
+        arguments: '--configuration $(buildConfiguration)'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish Web App'
+      inputs:
+        command: 'publish'
+        publishWebProjects: true
+        arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/Web'
+
+    - task: DotNetCoreCLI@2
+      displayName: 'Publish Azure Functions'
+      inputs:
+        command: 'publish'
+        projects: '**/GiftOfTheGivers.Functions.csproj'
+        arguments: '--configuration $(buildConfiguration) --output $(Build.ArtifactStagingDirectory)/Functions'
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Artifacts to Pipeline'
+      inputs:
+        PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+        ArtifactName: 'drop'
+        publishLocation: 'Container'
+
+- stage: DeployToAzure
+  displayName: 'Deployment Stage'
+  dependsOn: BuildAndTest
+  condition: succeeded()
+  jobs:
+  - deployment: DeployJob
+    environment: 'Production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: AzureWebApp@1
+            displayName: 'Deploy Web App to Azure App Service'
+            inputs:
+              azureSubscription: 'Azure-Subscription-Connection'
+              appType: 'webAppLinux'
+              appName: 'giftofthegivers-prototype-app'
+              package: '$(Pipeline.Workspace)/drop/Web/**/*.zip'
+
+          - task: AzureFunctionApp@1
+            displayName: 'Deploy Azure Functions'
+            inputs:
+              azureSubscription: 'Azure-Subscription-Connection'
+              appType: 'functionAppLinux'
+              appName: 'func-gotg-prod'
+              package: '$(Pipeline.Workspace)/drop/Functions/**/*.zip'
+- task: NuGetAuthenticate@1
+  inputs:
